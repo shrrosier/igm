@@ -19,6 +19,7 @@ import matplotlib
 import sys
 sys.path.append('/home/srosier/work/tgregov')
 from Optimizer_NN import Optimizer_NN
+from Optimizer_NN_LBFGS import Optimizer_NN_LBFGS
 
 def initialize_iceflow_emulator(cfg, state):
 
@@ -156,8 +157,68 @@ def update_iceflow_emulated(cfg, state):
 
     update_2d_iceflow_variables(cfg, state)
 
-
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
+
+    fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+
+    XX = fieldin_to_X(cfg, fieldin) 
+
+    X = split_into_patches(XX, cfg.processes.iceflow.emulator.framesizemax,
+                            cfg.processes.iceflow.emulator.split_patch_method)
+    
+    Ny = X.shape[-3]
+    Nx = X.shape[-2]
+    
+    PAD = compute_PAD(cfg,Nx,Ny)
+
+    Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
+
+    Y = state.iceflow_model(Xin)
+
+    print("Xin shape:", Xin.shape)
+    print("Y shape:", Y.shape)
+
+    Y2 = Y[:,:Ny,:Nx,:]
+    print("Y2 shape:", Y2.shape)
+
+    cost_fn = lambda Y: calculate_cost(cfg, X, Y, Nx, Ny)
+
+    test = cost_fn(Y)
+    print("Test cost:", test.numpy())
+
+
+    optimizer = Optimizer_NN_LBFGS(
+        cost_fn, 
+        state.iceflow_model, 
+        Xin, 
+        scale     = 10, 
+        iter_max  = 500, 
+        tol       = 1e-5,
+        time_max  = 1000, 
+        alpha_min = 1e-5
+    )
+
+    w = optimizer.minimize()
+
+    
+
+def calculate_cost(cfg, X, Y, Nx, Ny):
+    # print dimensions of X and Y
+    print("X shape:", X.shape)
+    print("Y shape:", Y.shape)
+    Y2 = Y[:,:Ny,:Nx,:]
+    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[0, :, :, :, :], Y2[:, :, :, :])
+ 
+    C_shear_cost = tf.reduce_mean(C_shear)
+    C_slid_cost  = tf.reduce_mean(C_slid)
+    C_grav_cost  = tf.reduce_mean(C_grav)
+    C_float_cost = tf.reduce_mean(C_float)
+
+    COST = C_shear_cost + C_slid_cost + C_grav_cost + C_float_cost
+
+    return COST
+
+def update_iceflow_emulator_old(cfg, state, it, pertubate=False):
  
     run_it = False
     if cfg.processes.iceflow.emulator.retrain_freq > 0:

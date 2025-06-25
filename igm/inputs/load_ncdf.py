@@ -18,8 +18,8 @@ def run(cfg, state):
 
     nc = Dataset(filepath, "r")
 
-    x = np.squeeze(nc.variables["x"]).astype("float32")
-    y = np.squeeze(nc.variables["y"]).astype("float32")
+    x = np.squeeze(nc.variables["x"]).astype(cfg.processes.iceflow.emulator.precision)
+    y = np.squeeze(nc.variables["y"]).astype(cfg.processes.iceflow.emulator.precision)
 
     # make sure the grid has same cell spacing in x and y
     # assert abs(x[1] - x[0]) == abs(y[1] - y[0])
@@ -27,7 +27,7 @@ def run(cfg, state):
     # load any field contained in the ncdf file, replace missing entries by nan
 
     if "time" in nc.variables:
-        TIME = np.squeeze(nc.variables["time"]).astype("float32")
+        TIME = np.squeeze(nc.variables["time"]).astype(cfg.processes.iceflow.emulator.precision)
         I = np.where(TIME == cfg.processes.time.start)[0][0]
         istheretime = True
     else:
@@ -36,9 +36,9 @@ def run(cfg, state):
     for var in nc.variables:
         if not var in ["x", "y", "z", "time"]:
             if istheretime:
-                vars()[var] = np.squeeze(nc.variables[var][I]).astype("float32")
+                vars()[var] = np.squeeze(nc.variables[var][I]).astype(cfg.processes.iceflow.emulator.precision)
             else:
-                vars()[var] = np.squeeze(nc.variables[var]).astype("float32")
+                vars()[var] = np.squeeze(nc.variables[var]).astype(cfg.processes.iceflow.emulator.precision)
             vars()[var] = np.where(vars()[var] > 10**15, np.nan, vars()[var])
 
 
@@ -85,9 +85,9 @@ def run(cfg, state):
     for var in nc.variables:
         if not var in ["z", "time"]:
             if var in ["x", "y"]:
-                vars(state)[var] = tf.constant(vars()[var].astype("float32"))
+                vars(state)[var] = tf.constant(vars()[var].astype(cfg.processes.iceflow.emulator.precision))
             else:
-                vars(state)[var] = tf.Variable(vars()[var].astype("float32"), trainable=False)
+                vars(state)[var] = tf.Variable(vars()[var].astype(cfg.processes.iceflow.emulator.precision), trainable=False)
 
     nc.close()
 
