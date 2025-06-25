@@ -190,10 +190,10 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
         cost_fn, 
         state.iceflow_model, 
         Xin, 
-        scale     = 10, 
-        iter_max  = 50000, 
+        scale     = 1, 
+        iter_max  = 100000, 
         tol       = 1e-5,
-        time_max  = 1000, 
+        time_max  = 10000, 
         alpha_min = 1e-5,
     )
 

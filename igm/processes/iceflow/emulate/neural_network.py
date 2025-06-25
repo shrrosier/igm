@@ -6,6 +6,66 @@
 import numpy as np 
 import tensorflow as tf 
 
+def cnn_v2(cfg, nb_inputs, nb_outputs):
+    """
+    Routine serve to build a convolutional neural network
+    """
+
+    inputs = tf.keras.layers.Input(shape=[None, None, nb_inputs], dtype=cfg.processes.iceflow.emulator.precision)
+
+    conv = inputs
+
+    if cfg.processes.iceflow.emulator.network.activation == "LeakyReLU":
+        activation = tf.keras.layers.LeakyReLU(alpha=0.01)
+    else:
+        activation = tf.keras.layers.Activation(cfg.processes.iceflow.emulator.network.activation)
+
+    for i in range(int(cfg.processes.iceflow.emulator.network.nb_layers)):
+
+        if cfg.processes.iceflow.emulator.network.separable:
+            conv = tf.keras.layers.SeparableConv2D(
+                filters=cfg.processes.iceflow.emulator.network.nb_out_filter,
+                kernel_size=(cfg.processes.iceflow.emulator.network.conv_ker_size,) * 2,
+                depthwise_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
+                pointwise_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
+                padding="same",
+                dtype=cfg.processes.iceflow.emulator.precision,
+            )(conv)
+
+        else:
+            conv = tf.keras.layers.Conv2D(
+                filters=cfg.processes.iceflow.emulator.network.nb_out_filter,
+                kernel_size=(cfg.processes.iceflow.emulator.network.conv_ker_size, cfg.processes.iceflow.emulator.network.conv_ker_size),
+                kernel_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
+                padding="same",
+                dtype=cfg.processes.iceflow.emulator.precision,
+            )(conv)
+
+        if cfg.processes.iceflow.emulator.network.batch_normalization:
+            conv = tf.keras.layers.BatchNormalization()(conv)
+
+        conv = activation(conv)
+
+        if cfg.processes.iceflow.emulator.network.dropout_rate>0:
+            conv = tf.keras.layers.Dropout(cfg.processes.iceflow.emulator.network.dropout_rate)(conv)
+
+ 
+    outputs = conv
+
+    outputs = tf.keras.layers.Conv2D(
+        filters=nb_outputs,
+        kernel_size=(
+            1,
+            1,
+        ),
+        kernel_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
+        activation=None,
+        dtype=cfg.processes.iceflow.emulator.precision,
+    )(outputs)
+
+    return tf.keras.models.Model(inputs=inputs, outputs=outputs)
+
+
 def cnn(cfg, nb_inputs, nb_outputs):
     """
     Routine serve to build a convolutional neural network
