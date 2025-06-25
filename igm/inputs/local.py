@@ -71,11 +71,11 @@ def run(cfg, state):
 
     for variable, array in ds.data_vars.items():
         if (array.ndim>0)|(variable in ["dx", "dy"]):
-            setattr(state, variable, tf.Variable(np.squeeze(array).astype("float32")))
+            setattr(state, variable, tf.Variable(np.squeeze(array).astype(cfg.processes.iceflow.emulator.precision)))
 
     for coord, array in ds.coords.items():
         setattr(
-            state, coord, tf.constant(array.astype("float32"))
+            state, coord, tf.constant(array.astype(cfg.processes.iceflow.emulator.precision))
         ) 
 
     # This is to be used to forward meta data to the output

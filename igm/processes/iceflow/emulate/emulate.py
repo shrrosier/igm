@@ -23,18 +23,20 @@ from Optimizer_NN_LBFGS import Optimizer_NN_LBFGS
 
 def initialize_iceflow_emulator(cfg, state):
 
-    if (int(tf.__version__.split(".")[1]) <= 10) | (int(tf.__version__.split(".")[1]) >= 16) :
-        state.opti_retrain = getattr(tf.keras.optimizers,cfg.processes.iceflow.emulator.optimizer)(
-            learning_rate=cfg.processes.iceflow.emulator.lr,
-            epsilon=cfg.processes.iceflow.emulator.optimizer_epsilon,
-            clipnorm=cfg.processes.iceflow.emulator.optimizer_clipnorm
-        )
-    else:
-        state.opti_retrain = getattr(tf.keras.optimizers.legacy,cfg.processes.iceflow.emulator.optimizer)( 
-            learning_rate=cfg.processes.iceflow.emulator.lr,
-            epsilon=cfg.processes.iceflow.emulator.optimizer_epsilon,
-            clipnorm=cfg.processes.iceflow.emulator.optimizer_clipnorm
-        )
+    if (cfg.processes.iceflow.emulator.optimizer == "Adam"):
+
+        if (int(tf.__version__.split(".")[1]) <= 10) | (int(tf.__version__.split(".")[1]) >= 16) :
+            state.opti_retrain = getattr(tf.keras.optimizers,cfg.processes.iceflow.emulator.optimizer)(
+                learning_rate=cfg.processes.iceflow.emulator.lr,
+                epsilon=cfg.processes.iceflow.emulator.optimizer_epsilon,
+                clipnorm=cfg.processes.iceflow.emulator.optimizer_clipnorm
+            )
+        else:
+            state.opti_retrain = getattr(tf.keras.optimizers.legacy,cfg.processes.iceflow.emulator.optimizer)( 
+                learning_rate=cfg.processes.iceflow.emulator.lr,
+                epsilon=cfg.processes.iceflow.emulator.optimizer_epsilon,
+                clipnorm=cfg.processes.iceflow.emulator.optimizer_clipnorm
+            )
 
     direct_name = (
         "pinnbp"
@@ -159,6 +161,15 @@ def update_iceflow_emulated(cfg, state):
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
+    if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
+        update_iceflow_emulator_LBFGS(cfg, state, it, pertubate)
+    elif cfg.processes.iceflow.emulator.optimizer == "Adam":
+        update_iceflow_emulator_ADAM(cfg, state, it, pertubate)
+    else:
+        raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
+
+def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
+
     fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
     XX = fieldin_to_X(cfg, fieldin) 
@@ -173,41 +184,35 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
     Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
 
-    Y = state.iceflow_model(Xin)
-
-    print("Xin shape:", Xin.shape)
-    print("Y shape:", Y.shape)
-
-    Y2 = Y[:,:Ny,:Nx,:]
-    print("Y2 shape:", Y2.shape)
-
     cost_fn = lambda Y: calculate_cost(cfg, X, Y, Nx, Ny)
-
-    test = cost_fn(Y)
-    print("Test cost:", test.numpy())
-
 
     optimizer = Optimizer_NN_LBFGS(
         cost_fn, 
         state.iceflow_model, 
         Xin, 
         scale     = 10, 
-        iter_max  = 500, 
+        iter_max  = 50000, 
         tol       = 1e-5,
         time_max  = 1000, 
-        alpha_min = 1e-5
+        alpha_min = 1e-5,
     )
 
-    w = optimizer.minimize()
+    w,optim = optimizer.minimize()
+
+    times = optim.times
+    costs = optim.costs
+    grads = optim.grads_norm
+
+    # save the costs, gradients and times
+    if len(cfg.processes.iceflow.emulator.save_cost)>0:
+        np.savetxt('LBFGS-'+str(it)+'.dat',
+                   np.array(list(zip(costs, grads, times))), fmt="%5.10f")
 
     
 
 def calculate_cost(cfg, X, Y, Nx, Ny):
-    # print dimensions of X and Y
-    print("X shape:", X.shape)
-    print("Y shape:", Y.shape)
-    Y2 = Y[:,:Ny,:Nx,:]
-    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[0, :, :, :, :], Y2[:, :, :, :])
+
+    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[0, :, :, :, :], Y[:,:Ny,:Nx,:])
  
     C_shear_cost = tf.reduce_mean(C_shear)
     C_slid_cost  = tf.reduce_mean(C_slid)
@@ -218,7 +223,7 @@ def calculate_cost(cfg, X, Y, Nx, Ny):
 
     return COST
 
-def update_iceflow_emulator_old(cfg, state, it, pertubate=False):
+def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
  
     run_it = False
     if cfg.processes.iceflow.emulator.retrain_freq > 0:
@@ -230,6 +235,10 @@ def update_iceflow_emulator_old(cfg, state, it, pertubate=False):
 
         state.COST_EMULATOR = []
         state.GRAD_EMULATOR = []
+        state.OPTIMIZER_TIMES = []
+
+        # initialize time t0
+        t0 = tf.timestamp()
      
         fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
@@ -328,11 +337,12 @@ def update_iceflow_emulator_old(cfg, state, it, pertubate=False):
  
             state.COST_EMULATOR.append(cost_emulator)
             state.GRAD_EMULATOR.append(grad_emulator)
+            state.OPTIMIZER_TIMES.append(tf.timestamp() - t0)
 
     
         if len(cfg.processes.iceflow.emulator.save_cost)>0:
             np.savetxt(cfg.processes.iceflow.emulator.save_cost+'-'+str(it)+'.dat',
-                    np.array(list(zip(state.COST_EMULATOR,state.GRAD_EMULATOR))), fmt="%5.10f")
+                    np.array(list(zip(state.COST_EMULATOR,state.GRAD_EMULATOR,state.OPTIMIZER_TIMES))), fmt="%5.10f")
 
 def split_into_patches(X, nbmax, split_patch_method):
     """

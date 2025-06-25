@@ -11,7 +11,7 @@ def cnn(cfg, nb_inputs, nb_outputs):
     Routine serve to build a convolutional neural network
     """
 
-    inputs = tf.keras.layers.Input(shape=[None, None, nb_inputs])
+    inputs = tf.keras.layers.Input(shape=[None, None, nb_inputs], dtype=cfg.processes.iceflow.emulator.precision)
 
     conv = inputs
 
@@ -26,6 +26,7 @@ def cnn(cfg, nb_inputs, nb_outputs):
             kernel_size=(cfg.processes.iceflow.emulator.network.conv_ker_size, cfg.processes.iceflow.emulator.network.conv_ker_size),
             kernel_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
             padding="same",
+            dtype=cfg.processes.iceflow.emulator.precision,
         )(conv)
 
         conv = activation(conv)
@@ -45,6 +46,7 @@ def cnn(cfg, nb_inputs, nb_outputs):
                             cfg.processes.iceflow.emulator.network.conv_ker_size,
                             cfg.processes.iceflow.emulator.network.conv_ker_size),
                 padding="same",
+                dtype=cfg.processes.iceflow.emulator.precision,
             )(conv)
 
             conv = tf.keras.layers.UpSampling3D( size=(2, 1, 1) )(conv)   
@@ -61,6 +63,7 @@ def cnn(cfg, nb_inputs, nb_outputs):
         ),
         kernel_initializer=cfg.processes.iceflow.emulator.network.weight_initialization,
         activation=None,
+        dtype=cfg.processes.iceflow.emulator.precision,
     )(outputs)
 
     return tf.keras.models.Model(inputs=inputs, outputs=outputs)
