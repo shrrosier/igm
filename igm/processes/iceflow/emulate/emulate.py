@@ -168,33 +168,43 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
     else:
         raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
 
+
 def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
     fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
     XX = fieldin_to_X(cfg, fieldin) 
 
-    X = split_into_patches(XX, cfg.processes.iceflow.emulator.framesizemax,
-                            cfg.processes.iceflow.emulator.split_patch_method)
-    
-    Ny = X.shape[-3]
-    Nx = X.shape[-2]
-    
-    PAD = compute_PAD(cfg,Nx,Ny)
+    XXX = pertubate_SR(cfg,XX)
 
-    Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
+    patches = split_into_patches_with_overlap(XXX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
+        
+    Ny = patches.shape[-3]
+    Nx = patches.shape[-2]
+
+    # combine perturbation and patch axes into single batch axis at index 0
+    X = tf.reshape(patches, (-1, patches.shape[2], patches.shape[3], patches.shape[4]))
+    
+    # PAD = compute_PAD(cfg,Nx,Ny)
+
+    # Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
+
 
     cost_fn = lambda Y: calculate_cost(cfg, X, Y, Nx, Ny)
+
+    # Y = state.iceflow_model(X)  # compute the output of the NN
+    # cost = cost_fn(Y)
+    # print(cost.numpy())
 
     optimizer = Optimizer_NN_LBFGS(
         cost_fn, 
         state.iceflow_model, 
-        Xin, 
+        X, 
         scale     = 1, 
         iter_max  = 100000, 
-        tol       = 1e-5,
-        time_max  = 10000, 
-        alpha_min = 1e-5,
+        tol       = 1e-20,
+        time_max  = 500, 
+        alpha_min = 1e-20,
     )
 
     w,optim = optimizer.minimize()
@@ -212,7 +222,7 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
 def calculate_cost(cfg, X, Y, Nx, Ny):
 
-    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[0, :, :, :, :], Y[:,:Ny,:Nx,:])
+    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X, Y[:,:Ny,:Nx,:])
  
     C_shear_cost = tf.reduce_mean(C_shear)
     C_slid_cost  = tf.reduce_mean(C_slid)
@@ -422,4 +432,142 @@ def save_iceflow_model(cfg, state):
     )
     fid.close()
 
- 
+def split_into_patches_with_overlap(X, nbmax, overlap=0.25):
+    """
+    Split the input tensor into patches of size nbmax x nbmax, with at least the specified minimum overlap.
+    The stride is chosen so that all patches are nbmax x nbmax and the entire input is covered,
+    and the difference is split evenly across the input (so the actual overlap may be slightly larger).
+    Args:
+        X: Input tensor of shape (batch_size, height, width, channels).
+        nbmax: Patch size (height and width).
+        overlap: Minimum fractional overlap between patches (e.g., 0.25 for 25% overlap).
+    Returns:
+        A tensor containing the patches.
+    """
+    print(nbmax)
+    XX = []
+    ny, nx = X.shape[1], X.shape[2]
+    if nbmax > nx and nbmax > ny:
+        return tf.expand_dims(X, axis=0)
+
+    # Calculate the number of steps needed to cover the input with the minimum overlap
+    min_stride = int(nbmax * (1 - overlap))
+    n_patches_y = int(np.ceil((ny - nbmax) / min_stride)) + 1
+    n_patches_x = int(np.ceil((nx - nbmax) / min_stride)) + 1
+
+    # Now recalculate the stride so that the last patch lands exactly at the end
+    if n_patches_y > 1:
+        stride_y = (ny - nbmax) / (n_patches_y - 1)
+    else:
+        stride_y = 0
+    if n_patches_x > 1:
+        stride_x = (nx - nbmax) / (n_patches_x - 1)
+    else:
+        stride_x = 0
+
+    # Generate patch start indices
+    y_starts = [int(round(i * stride_y)) for i in range(n_patches_y)]
+    x_starts = [int(round(i * stride_x)) for i in range(n_patches_x)]
+
+    for i in y_starts:
+        for j in x_starts:
+            XX.append(X[:, i:i + nbmax, j:j + nbmax, :])
+
+    return tf.stack(XX, axis=0)
+
+def pertubate_SR(cfg, X):
+    """
+    Expand X along the batch dimension by adding Perlin-noise-perturbed copies
+    for each channel except 'dX'.
+    """
+    Ny, Nx = X.shape[1:3]
+    scale = cfg.processes.iceflow.emulator.perturbation_scale
+
+    # Find the smallest power-of-two dimensions larger than the field dimensions
+    largest_dim = max(Ny, Nx)
+    smallest_squared = 2 ** (int(np.log2(largest_dim)) + 1)
+
+    XX = [X]  # Start with the original
+
+    for _ in range(cfg.processes.iceflow.emulator.num_perturbations - 1):
+        # Start with a copy of X
+        perturbed_X = tf.identity(X)
+        noise_channels = []
+
+        for i, f in enumerate(cfg.processes.iceflow.emulator.fieldin):
+            if f == "dX":
+                # No noise for 'dX'
+                noise = tf.zeros((1, Ny, Nx, 1), dtype=X.dtype)
+            else:
+                # Generate Perlin noise for this channel
+                noise_np = generate_perlin_noise_2d(
+                    shape=(smallest_squared, smallest_squared),
+                    res=(4, 4),
+                    tileable=(False, False)
+                )
+                noise_np = noise_np[:Ny, :Nx]
+                noise = tf.convert_to_tensor(noise_np, dtype=X.dtype)
+                noise = tf.expand_dims(noise, axis=0)   # batch
+                noise = tf.expand_dims(noise, axis=-1)  # channel
+            noise_channels.append(noise)
+
+        # Stack all noise channels to shape (1, Ny, Nx, num_fields)
+        noise_tensor = tf.concat(noise_channels, axis=-1)
+        # Apply noise to all channels at once
+        perturbed_X = perturbed_X + perturbed_X * noise_tensor * scale
+        XX.append(perturbed_X)
+
+    # Concatenate along batch dimension
+    return tf.concat(XX, axis=0)
+
+def interpolant(t):
+    return t*t*t*(t*(t*6 - 15) + 10)
+
+def generate_perlin_noise_2d(
+        shape, res, tileable=(False, False), interpolant=interpolant
+):
+    """Generate a 2D numpy array of perlin noise.
+
+    Args:
+        shape: The shape of the generated array (tuple of two ints).
+            This must be a multple of res.
+        res: The number of periods of noise to generate along each
+            axis (tuple of two ints). Note shape must be a multiple of
+            res.
+        tileable: If the noise should be tileable along each axis
+            (tuple of two bools). Defaults to (False, False).
+        interpolant: The interpolation function, defaults to
+            t*t*t*(t*(t*6 - 15) + 10).
+
+    Returns:
+        A numpy array of shape shape with the generated noise.
+
+    Raises:
+        ValueError: If shape is not a multiple of res.
+    """
+    delta = (res[0] / shape[0], res[1] / shape[1])
+    d = (shape[0] // res[0], shape[1] // res[1])
+    grid = np.mgrid[0:res[0]:delta[0], 0:res[1]:delta[1]]\
+             .transpose(1, 2, 0) % 1
+    # Gradients
+    angles = 2*np.pi*np.random.rand(res[0]+1, res[1]+1)
+    gradients = np.dstack((np.cos(angles), np.sin(angles)))
+    if tileable[0]:
+        gradients[-1,:] = gradients[0,:]
+    if tileable[1]:
+        gradients[:,-1] = gradients[:,0]
+    gradients = gradients.repeat(d[0], 0).repeat(d[1], 1)
+    g00 = gradients[    :-d[0],    :-d[1]]
+    g10 = gradients[d[0]:     ,    :-d[1]]
+    g01 = gradients[    :-d[0],d[1]:     ]
+    g11 = gradients[d[0]:     ,d[1]:     ]
+    # Ramps
+    n00 = np.sum(np.dstack((grid[:,:,0]  , grid[:,:,1]  )) * g00, 2)
+    n10 = np.sum(np.dstack((grid[:,:,0]-1, grid[:,:,1]  )) * g10, 2)
+    n01 = np.sum(np.dstack((grid[:,:,0]  , grid[:,:,1]-1)) * g01, 2)
+    n11 = np.sum(np.dstack((grid[:,:,0]-1, grid[:,:,1]-1)) * g11, 2)
+    # Interpolation
+    t = interpolant(grid)
+    n0 = n00*(1-t[:,:,0]) + t[:,:,0]*n10
+    n1 = n01*(1-t[:,:,0]) + t[:,:,0]*n11
+    return np.sqrt(2)*((1-t[:,:,1])*n0 + t[:,:,1]*n1)
