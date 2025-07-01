@@ -95,21 +95,37 @@ def initialize_iceflow_emulator(cfg, state):
             cfg.processes.iceflow.numerics.Nz - 1
         )
         nb_outputs = 2 * cfg.processes.iceflow.numerics.Nz
+
+    if cfg.processes.iceflow.emulator.network.input_normalization:
+        fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+        X = fieldin_to_X(cfg, fieldin)  # shape: [1, Nx, Ny, fieldin]
+
+        # Compute per-channel min/max
+        min_vals = np.min(X, axis=(0,1,2)) * (1.0 - 2.0 * cfg.processes.iceflow.emulator.perturbation_scale)
+        max_vals = np.max(X, axis=(0,1,2)) * (1.0 + 2.0 * cfg.processes.iceflow.emulator.perturbation_scale)
+
+        min_vals_tf = tf.constant(min_vals, dtype=cfg.processes.iceflow.emulator.precision)
+        max_vals_tf = tf.constant(max_vals, dtype=cfg.processes.iceflow.emulator.precision)
+
+        def normalize_fn(x):
+            # x shape: [batch, Nx, Ny, fieldin]
+            return 2.0 * (x - min_vals_tf) / (max_vals_tf - min_vals_tf) - 1.0
+
+        normalizer = tf.keras.layers.Lambda(normalize_fn)
+    else:
+        normalizer = None
+
+    if cfg.processes.iceflow.emulator.network.architecture == "cnn_v2":
+        state.iceflow_model = getattr(igm.processes.iceflow.emulate.emulate, cfg.processes.iceflow.emulator.network.architecture)(
+            cfg, nb_inputs, nb_outputs, normalizer=normalizer
+        )
+    else:
         state.iceflow_model = getattr(igm.processes.iceflow.emulate.emulate, cfg.processes.iceflow.emulator.network.architecture)(
             cfg, nb_inputs, nb_outputs
-        )
+            )
 
     print(state.iceflow_model.summary())
 
-    # direct_name = 'pinnbp_10_4_cnn_16_32_2_1'        
-    # dirpath = importlib_resources.files(emulators).joinpath(direct_name)
-    # iceflow_model_pretrained = tf.keras.models.load_model(
-    #     os.path.join(dirpath, "model.h5"), compile=False
-    # )
-    # N=16
-    # pretrained_weights = [layer.get_weights() for layer in iceflow_model_pretrained.layers[:N]]
-    # for i in range(N):
-    #     state.iceflow_model.layers[i].set_weights(pretrained_weights[i])
 
 def update_iceflow_emulated(cfg, state):
     # Define the input of the NN, include scaling
@@ -175,22 +191,20 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
     XX = fieldin_to_X(cfg, fieldin) 
 
-    XXX = pertubate_SR(cfg,XX)
-
-    patches = split_into_patches_with_overlap(XXX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
+    X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
         
-    Ny = patches.shape[-3]
-    Nx = patches.shape[-2]
+    Ny = X.shape[-3]
+    Nx = X.shape[-2]
 
     # combine perturbation and patch axes into single batch axis at index 0
-    X = tf.reshape(patches, (-1, patches.shape[2], patches.shape[3], patches.shape[4]))
+    # X = tf.reshape(patches, (-1, patches.shape[2], patches.shape[3], patches.shape[4]))
     
     # PAD = compute_PAD(cfg,Nx,Ny)
 
     # Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
 
 
-    cost_fn = lambda Y: calculate_cost(cfg, X, Y, Nx, Ny)
+    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny)
 
     # Y = state.iceflow_model(X)  # compute the output of the NN
     # cost = cost_fn(Y)
@@ -200,11 +214,13 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
         cost_fn, 
         state.iceflow_model, 
         X, 
+        fieldin = cfg.processes.iceflow.emulator.fieldin,
         scale     = 1, 
         iter_max  = 100000, 
         tol       = 1e-20,
-        time_max  = 500, 
+        time_max  = 1500, 
         alpha_min = 1e-20,
+        num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
     )
 
     w,optim = optimizer.minimize()
@@ -345,6 +361,9 @@ def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
 
                 grad_emulator = tf.linalg.global_norm(grads)
  
+            # Average cost across all batches
+            cost_emulator = cost_emulator / X.shape[0]
+
             state.COST_EMULATOR.append(cost_emulator)
             state.GRAD_EMULATOR.append(grad_emulator)
             state.OPTIMIZER_TIMES.append(tf.timestamp() - t0)

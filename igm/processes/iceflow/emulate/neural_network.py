@@ -6,14 +6,13 @@
 import numpy as np 
 import tensorflow as tf 
 
-def cnn_v2(cfg, nb_inputs, nb_outputs):
-    """
-    Routine serve to build a convolutional neural network
-    """
-
+def cnn_v2(cfg, nb_inputs, nb_outputs, normalizer=None):
+    
     inputs = tf.keras.layers.Input(shape=[None, None, nb_inputs], dtype=cfg.processes.iceflow.emulator.precision)
-
-    conv = inputs
+    x = inputs
+    if normalizer is not None:
+        x = normalizer(x)
+    conv = x
 
     if cfg.processes.iceflow.emulator.network.activation == "LeakyReLU":
         activation = tf.keras.layers.LeakyReLU(alpha=0.01)

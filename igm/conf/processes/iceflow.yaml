@@ -62,6 +62,7 @@ iceflow:
     perturbation_scale: 0.05
     num_perturbations: 4
     network:
+      input_normalization: false
       separable: false
       batch_normalization: false
       architecture: cnn
