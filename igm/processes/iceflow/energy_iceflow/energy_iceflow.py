@@ -31,7 +31,7 @@ def iceflow_energy(cfg, U, V, fieldin):
         gravity_cst = cfg.processes.iceflow.physics.gravity_cst
         new_friction_param = cfg.processes.iceflow.physics.new_friction_param
  
-        n, w = gauss_points_and_weigths(ord_gauss=3)
+        n, w = gauss_points_and_weigths(cfg,ord_gauss=3)
   
         Cshear = cost_shear_2layers(thk, arrhenius, U, V, dX, exp_glen, regu_glen, w, n)
  

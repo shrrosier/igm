@@ -106,14 +106,37 @@ def initialize_iceflow_emulator(cfg, state):
 
         min_vals_tf = tf.constant(min_vals, dtype=cfg.processes.iceflow.emulator.precision)
         max_vals_tf = tf.constant(max_vals, dtype=cfg.processes.iceflow.emulator.precision)
+        
 
         def normalize_fn(x):
             # x shape: [batch, Nx, Ny, fieldin]
-            return 2.0 * (x - min_vals_tf) / (max_vals_tf - min_vals_tf) - 1.0
+            x2 = tf.cast(x, dtype=cfg.processes.iceflow.emulator.precision) # can't figure out why this is needed, but it is
+            return 2.0 * (x2 - min_vals_tf) / (max_vals_tf - min_vals_tf) - 1.0
 
         normalizer = tf.keras.layers.Lambda(normalize_fn)
     else:
         normalizer = None
+    # if cfg.processes.iceflow.emulator.network.input_normalization:
+    #     fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+    #     X = fieldin_to_X(cfg, fieldin)  # shape: [1, Nx, Ny, fieldin]
+
+    #     # Compute per-channel mean and variance for normalization
+    #     mean = np.mean(X, axis=(0, 1, 2))
+    #     var = np.var(X, axis=(0, 1, 2))
+
+    #     var[-1] = 1.0
+
+    #     print(mean, var)
+
+    #     # Create and adapt the normalization layer
+    #     normalizer = tf.keras.layers.Normalization(
+    #         axis=-1,
+    #         mean=mean,
+    #         variance=var,
+    #         dtype=cfg.processes.iceflow.emulator.precision
+    #     )
+    # else:
+    #     normalizer = None
 
     if cfg.processes.iceflow.emulator.network.architecture == "cnn_v2":
         state.iceflow_model = getattr(igm.processes.iceflow.emulate.emulate, cfg.processes.iceflow.emulator.network.architecture)(
@@ -125,6 +148,31 @@ def initialize_iceflow_emulator(cfg, state):
             )
 
     print(state.iceflow_model.summary())
+
+    fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+
+    XX = fieldin_to_X(cfg, fieldin) 
+
+    X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
+        
+    Ny = X.shape[-3]
+    Nx = X.shape[-2]
+
+    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny)
+
+    state.optimizer = Optimizer_NN_LBFGS(
+        cost_fn, 
+        state.iceflow_model, 
+        X, 
+        fieldin = cfg.processes.iceflow.emulator.fieldin,
+        scale     = 1, 
+        iter_max  = 1, 
+        tol       = 1e-4,
+        time_max  = 6000, 
+        alpha_min = 1e-10,
+        num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
+        precision = cfg.processes.iceflow.emulator.precision,
+    )
 
 
 def update_iceflow_emulated(cfg, state):
@@ -177,6 +225,8 @@ def update_iceflow_emulated(cfg, state):
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
+
+
     if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
         update_iceflow_emulator_LBFGS(cfg, state, it, pertubate)
     elif cfg.processes.iceflow.emulator.optimizer == "Adam":
@@ -187,52 +237,39 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
 def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
-    fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+    run_it = False
+    if cfg.processes.iceflow.emulator.retrain_freq > 0:
+       run_it = (it % cfg.processes.iceflow.emulator.retrain_freq == 0)
+ 
+    warm_up = int(it <= cfg.processes.iceflow.emulator.warm_up_it)
 
-    XX = fieldin_to_X(cfg, fieldin) 
+    if (warm_up | run_it):
 
-    X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
-        
-    Ny = X.shape[-3]
-    Nx = X.shape[-2]
+        if warm_up:
+            nbit = cfg.processes.iceflow.emulator.nbit_init
+        else:
+            nbit = cfg.processes.iceflow.emulator.nbit
 
-    # combine perturbation and patch axes into single batch axis at index 0
-    # X = tf.reshape(patches, (-1, patches.shape[2], patches.shape[3], patches.shape[4]))
-    
-    # PAD = compute_PAD(cfg,Nx,Ny)
+        fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
-    # Xin = tf.pad(X[0, :, :, :, :], PAD, "CONSTANT")
+        XX = fieldin_to_X(cfg, fieldin) 
 
+        X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
 
-    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny)
+        state.COST_EMULATOR = []
 
-    # Y = state.iceflow_model(X)  # compute the output of the NN
-    # cost = cost_fn(Y)
-    # print(cost.numpy())
+        w,optim = state.optimizer.minimize(X,nbit)
 
-    optimizer = Optimizer_NN_LBFGS(
-        cost_fn, 
-        state.iceflow_model, 
-        X, 
-        fieldin = cfg.processes.iceflow.emulator.fieldin,
-        scale     = 1, 
-        iter_max  = 100000, 
-        tol       = 1e-20,
-        time_max  = 1500, 
-        alpha_min = 1e-20,
-        num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
-    )
+        times = optim.times
+        costs = optim.costs
+        grads = optim.grads_norm
 
-    w,optim = optimizer.minimize()
+        state.COST_EMULATOR.append(tf.convert_to_tensor(costs[-1], np.float32))
 
-    times = optim.times
-    costs = optim.costs
-    grads = optim.grads_norm
-
-    # save the costs, gradients and times
-    if len(cfg.processes.iceflow.emulator.save_cost)>0:
-        np.savetxt('LBFGS-'+str(it)+'.dat',
-                   np.array(list(zip(costs, grads, times))), fmt="%5.10f")
+        # save the costs, gradients and times
+        if len(cfg.processes.iceflow.emulator.save_cost)>0:
+            np.savetxt('LBFGS-'+str(it)+'.dat',
+                    np.array(list(zip(costs, grads, times))), fmt="%5.10f")
 
     
 

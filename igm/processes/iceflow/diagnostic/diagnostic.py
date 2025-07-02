@@ -35,11 +35,18 @@ def update_iceflow_diagnostic(cfg, state):
     if (state.t - state.tlast_diagno) >= 10: # cfg.processes.iceflow.diagnostic.update_freq
 
         time_solve = time.time()
+
+        U_emulater = state.U
+        V_emulater = state.V
+        
+        # reset state.U and state.V
+        state.U = tf.zeros_like(state.U)
+        state.V = tf.zeros_like(state.V)
  
-        U, V, Cost_Glen = solve_iceflow(cfg, state, state.U, state.V)
+        U_solver, V_solver, Cost_Glen = solve_iceflow(cfg, state, state.U, state.V)
  
-        state.velsurf_mag_app = getmag(state.U[-1],state.V[-1])
-        state.velsurf_mag_exa = getmag(U[-1],V[-1])
+        state.velsurf_mag_app = getmag(U_emulater[-1],V_emulater[-1])
+        state.velsurf_mag_exa = getmag(U_solver[-1],V_solver[-1])
 
         time_solve -= time.time()
         time_solve *= -1
@@ -50,7 +57,7 @@ def update_iceflow_diagnostic(cfg, state):
         nb_it_solve = len(Cost_Glen)
         nb_it_emul = len(state.COST_EMULATOR)
 
-        l1, l2 = computemisfit(state, state.thk, state.U - U, state.V - V)
+        l1, l2 = computemisfit(state, state.thk, U_emulater - U_solver, V_emulater - V_solver)
 
         vol = np.sum(state.thk) * (state.dx**2) / 10**9
 

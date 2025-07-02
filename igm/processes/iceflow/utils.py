@@ -38,7 +38,7 @@ def define_vertical_weight(cfg, state):
     weight = (zeta / cfg.processes.iceflow.numerics.vert_spacing) * (
         1.0 + (cfg.processes.iceflow.numerics.vert_spacing - 1.0) * zeta
     )
-    weight = tf.Variable(weight[1:] - weight[:-1], dtype=tf.float32, trainable=False)
+    weight = tf.Variable(weight[1:] - weight[:-1], dtype=cfg.processes.iceflow.emulator.precision, trainable=False)
     state.vert_weight = tf.expand_dims(tf.expand_dims(weight, axis=-1), axis=-1)
 
 

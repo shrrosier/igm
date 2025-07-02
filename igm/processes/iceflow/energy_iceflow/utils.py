@@ -79,14 +79,14 @@ def get_dz_COND(thk, Nz, vert_spacing):
 
     return dz, COND
 
-def gauss_points_and_weigths(ord_gauss):
+def gauss_points_and_weigths(cfg,ord_gauss):
 
     if ord_gauss == 3:
-        n = np.array([0.11270, 0.5,     0.88730], dtype=np.float32)
-        w = np.array([0.27778, 0.44444, 0.27778], dtype=np.float32)
+        n = np.array([0.11270, 0.5,     0.88730], dtype=cfg.processes.iceflow.emulator.precision)
+        w = np.array([0.27778, 0.44444, 0.27778], dtype=cfg.processes.iceflow.emulator.precision)
     elif ord_gauss == 5:
-        n = np.array([0.04691, 0.23077, 0.5,     0.76923, 0.95309], dtype=np.float32)
-        w = np.array([0.11847, 0.23932, 0.28444, 0.23932, 0.11847], dtype=np.float32)
+        n = np.array([0.04691, 0.23077, 0.5,     0.76923, 0.95309], dtype=cfg.processes.iceflow.emulator.precision)
+        w = np.array([0.11847, 0.23932, 0.28444, 0.23932, 0.11847], dtype=cfg.processes.iceflow.emulator.precision)
     elif ord_gauss == 7:
         n = np.array([0.025446, 0.129234, 0.297078,      0.5, 0.702922, 0.870766, 0.974554], dtype=np.float32)
         w = np.array([0.064742, 0.139852, 0.190915, 0.208979, 0.190915, 0.139852, 0.064742], dtype=np.float32)
