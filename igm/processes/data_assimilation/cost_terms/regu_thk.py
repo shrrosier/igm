@@ -8,7 +8,7 @@ import tensorflow as tf
 
 def regu_thk(cfg,state):
 
-    areaicemask = tf.reduce_sum(tf.where(state.icemask>0.5,1.0,0.0))*state.dx**2
+    areaicemask = tf.reduce_sum(tf.where(state.icemask > 0.5, tf.constant(1.0, dtype=state.icemask.dtype), tf.constant(0.0, dtype=state.icemask.dtype))) * state.dx**2
 
     # here we had factor 8*np.pi*0.04, which is equal to 1
     if cfg.processes.data_assimilation.cook.infer_params:

@@ -160,7 +160,7 @@ def initialize_iceflow_emulator(cfg, state):
 
     cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny)
 
-    state.optimizer = Optimizer_NN_LBFGS(
+    state.emulator_trainer = Optimizer_NN_LBFGS(
         cost_fn, 
         state.iceflow_model, 
         X, 
@@ -168,7 +168,7 @@ def initialize_iceflow_emulator(cfg, state):
         scale     = 1, 
         iter_max  = 1, 
         tol       = 1e-4,
-        time_max  = 6000, 
+        time_max  = 100000, 
         alpha_min = 1e-10,
         num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
         precision = cfg.processes.iceflow.emulator.precision,
@@ -225,6 +225,7 @@ def update_iceflow_emulated(cfg, state):
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
+    tf.profiler.experimental.start('logdir_path')
 
 
     if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
@@ -233,6 +234,9 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
         update_iceflow_emulator_ADAM(cfg, state, it, pertubate)
     else:
         raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
+    
+    tf.profiler.experimental.stop()
+
 
 
 def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
@@ -258,7 +262,7 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
         state.COST_EMULATOR = []
 
-        w,optim = state.optimizer.minimize(X,nbit)
+        w,optim = state.emulator_trainer.minimize(X,nbit)
 
         times = optim.times
         costs = optim.costs
