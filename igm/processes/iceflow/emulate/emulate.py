@@ -7,10 +7,13 @@ import numpy as np
 import tensorflow as tf 
 import os
 
-from igm.processes.iceflow.utils import fieldin_to_X, Y_to_UV, update_2d_iceflow_variables, compute_PAD, print_info
-from igm.processes.iceflow.energy_iceflow.energy_iceflow import iceflow_energy_XY
+from igm.processes.iceflow.utils import fieldin_to_X, Y_to_UV, compute_PAD, print_info
+from igm.processes.iceflow.utils import get_velbase, get_velsurf, get_velbar, force_max_velbar
+from igm.processes.iceflow.energy.energy import iceflow_energy_XY
+from igm.processes.iceflow.energy.sliding_laws.sliding_law import sliding_law_XY
 from igm.processes.iceflow.emulate.neural_network import *
 from igm.processes.iceflow.emulate import emulators
+from igm.utils.math.getmag import getmag
 import importlib_resources 
 import igm  
 import matplotlib.pyplot as plt
@@ -38,6 +41,9 @@ def initialize_iceflow_emulator(cfg, state):
                 clipnorm=cfg.processes.iceflow.emulator.optimizer_clipnorm
             )
 
+    L = (cfg.processes.iceflow.numerics.vert_basis=="Legendre")*'e' + \
+        (not cfg.processes.iceflow.numerics.vert_basis=="Legendre")*'a'
+
     direct_name = (
         "pinnbp"
         + "_"
@@ -57,7 +63,9 @@ def initialize_iceflow_emulator(cfg, state):
     direct_name += (
         str(cfg.processes.iceflow.physics.dim_arrhenius)
         + "_"
-        + str(int(cfg.processes.iceflow.physics.new_friction_param))
+        + str(int(1))
+        + "_"
+        + L
     )
 
     if cfg.processes.iceflow.emulator.pretrained:
@@ -207,21 +215,11 @@ def update_iceflow_emulated(cfg, state):
 
     # If requested, the speeds are artifically upper-bounded
     if cfg.processes.iceflow.force_max_velbar > 0:
-        velbar_mag = getmag3d(state.U, state.V)
-        state.U = \
-            tf.where(
-                velbar_mag >= cfg.processes.iceflow.force_max_velbar,
-                cfg.processes.iceflow.force_max_velbar * (state.U / velbar_mag),
-                state.U,
-            )
-        state.V = \
-            tf.where(
-                velbar_mag >= cfg.processes.iceflow.force_max_velbar,
-                cfg.processes.iceflow.force_max_velbar * (state.V / velbar_mag),
-                state.V,
-            ) 
+        force_max_velbar(cfg, state)
 
-    update_2d_iceflow_variables(cfg, state)
+    state.uvelbase, state.vvelbase = get_velbase(state.U, state.V, cfg.processes.iceflow.numerics.vert_basis)
+    state.uvelsurf, state.vvelsurf = get_velsurf(state.U, state.V, cfg.processes.iceflow.numerics.vert_basis)
+    state.ubar, state.vbar = get_velbar(state.U, state.V, state.vert_weight, cfg.processes.iceflow.numerics.vert_basis)
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
@@ -309,6 +307,8 @@ def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
      
         fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
+        vert_disc = [vars(state)[f] for f in ['zeta', 'dzeta', 'Leg_P', 'Leg_dPdz']]
+
         XX = fieldin_to_X(cfg, fieldin) 
 
         if pertubate:
@@ -344,32 +344,33 @@ def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
             cost_emulator = tf.Variable(0.0)
 
             for i in range(X.shape[0]):
-                with tf.GradientTape() as t:
+                with tf.GradientTape(persistent=True) as t:
 
                     if cfg.processes.iceflow.emulator.lr_decay < 1:
                         state.opti_retrain.lr = lr * (cfg.processes.iceflow.emulator.lr_decay ** (i / 1000))
 
                     Y = state.iceflow_model(tf.pad(X[i, :, :, :, :], PAD, "CONSTANT"))[:,:Ny,:Nx,:]
                     
-                    if iz>0:
-                        C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[i, :, iz:-iz, iz:-iz, :], Y[:, iz:-iz, iz:-iz, :])
-                    else:
-                        C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X[i, :, :, :, :], Y[:, :, :, :])
+                    energy_list = iceflow_energy_XY(cfg, X[i, :, iz:Ny-iz, iz:Nx-iz, :], \
+                                                         Y[:,    iz:Ny-iz, iz:Nx-iz, :], vert_disc)
+                    
+                    if len(cfg.processes.iceflow.physics.sliding_law) > 0:
+                        basis_vectors, sliding_shear_stress = \
+                            sliding_law_XY(cfg, X[i, :, iz:Ny-iz, iz:Nx-iz, :], \
+                                                Y[:,    iz:Ny-iz, iz:Nx-iz, :] )
  
-                    C_shear_cost = tf.reduce_mean(C_shear)
-                    C_slid_cost  = tf.reduce_mean(C_slid)
-                    C_grav_cost  = tf.reduce_mean(C_grav)
-                    C_float_cost = tf.reduce_mean(C_float)
+                    energy_mean_list = [tf.reduce_mean(en) for en in energy_list]
 
-                    COST = C_shear_cost + C_slid_cost + C_grav_cost + C_float_cost
+                    COST = tf.add_n(energy_mean_list)
 
                     cost_emulator = cost_emulator + COST
 
-                    U, V = Y_to_UV(cfg, Y) ; velsurf_mag = tf.sqrt(U[0][-1] ** 2 + V[0][-1] ** 2)
+                    U, V = Y_to_UV(cfg, Y) 
+                    velsurf_mag = getmag(*get_velsurf(U[0],V[0], cfg.processes.iceflow.numerics.vert_basis))
 
                     if warm_up:
-                        print_info(state, epoch, C_shear_cost.numpy(), C_slid_cost.numpy(), \
-                                          C_grav_cost.numpy(), COST.numpy(), tf.reduce_max(velsurf_mag).numpy())
+                        print_info(state,epoch, cfg, [e.numpy() for e in energy_mean_list], 
+                                                        tf.reduce_max(velsurf_mag).numpy())
 
                     if (epoch + 1) % 100 == 0:
                          
@@ -390,6 +391,13 @@ def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
 
                 grads = t.gradient(COST, state.iceflow_model.trainable_variables)
 
+                if len(cfg.processes.iceflow.physics.sliding_law) > 0:
+                    sliding_gradients = t.gradient( basis_vectors,
+                                                    state.iceflow_model.trainable_variables,
+                                                    output_gradients=sliding_shear_stress )
+                    grads = [ grad + (sgrad / tf.cast(Nx * Ny, tf.float32)) \
+                                for grad, sgrad in zip(grads, sliding_gradients) ]
+
                 # if (epoch + 1) % 100 == 0:
                 #     values = [tf.norm(g) for g in grads]
                 #     normalized = values / tf.reduce_sum(values) 
@@ -401,6 +409,8 @@ def update_iceflow_emulator_ADAM(cfg, state, it, pertubate=False):
                 )
 
                 grad_emulator = tf.linalg.global_norm(grads)
+
+                del t 
  
             # Average cost across all batches
             cost_emulator = cost_emulator / X.shape[0]

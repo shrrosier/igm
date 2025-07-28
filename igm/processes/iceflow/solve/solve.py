@@ -1,8 +1,10 @@
 import numpy as np 
 import tensorflow as tf 
-from igm.utils.math.getmag3d import getmag3d 
-from igm.processes.iceflow.energy_iceflow.energy_iceflow import iceflow_energy
-from igm.processes.iceflow.utils import EarlyStopping, update_2d_iceflow_variables, print_info
+from igm.utils.math.getmag import getmag
+from igm.processes.iceflow.energy.energy import iceflow_energy
+from igm.processes.iceflow.energy.sliding_laws.sliding_law import sliding_law
+from igm.processes.iceflow.utils import EarlyStopping, print_info
+from igm.processes.iceflow.utils import get_velbase, get_velsurf, get_velbar, force_max_velbar
 import matplotlib.pyplot as plt
 import matplotlib
 
@@ -27,7 +29,9 @@ def solve_iceflow(cfg, state, U, V):
 
     Cost_Glen = []
 
-    fieldin = [tf.expand_dims(vars(state)[f], axis=0) for f in cfg.processes.iceflow.emulator.fieldin]
+    fieldin = [vars(state)[f][None,...] for f in cfg.processes.iceflow.emulator.fieldin]
+
+    vert_disc = [vars(state)[f] for f in ['zeta', 'dzeta', 'Leg_P', 'Leg_dPdz']]
 
     early_stopping = EarlyStopping(relative_min_delta=0.0002, patience=10)
 
@@ -39,20 +43,20 @@ def solve_iceflow(cfg, state, U, V):
         state.ax.set_aspect("equal")
 
     for i in range(cfg.processes.iceflow.solver.nbitmax):
-        with tf.GradientTape() as t:
+        with tf.GradientTape(persistent=True) as t:
             t.watch(U)
             t.watch(V)
 
-            C_shear, C_slid, C_grav, C_float = iceflow_energy(
-                cfg, tf.expand_dims(U, axis=0), tf.expand_dims(V, axis=0), fieldin
-            )
+            energy_list = iceflow_energy(
+                cfg, U[None,:,:,:], V[None,:,:,:], fieldin, vert_disc
+            ) 
 
-            C_shear_cost = tf.reduce_mean(C_shear)
-            C_slid_cost  = tf.reduce_mean(C_slid)
-            C_grav_cost  = tf.reduce_mean(C_grav)
-            C_float_cost = tf.reduce_mean(C_float)
+            if len(cfg.processes.iceflow.physics.sliding_law) > 0:
+                basis_vectors, sliding_shear_stress = sliding_law(cfg, U[None,:,:,:], V[None,:,:,:], fieldin)
 
-            COST = C_shear_cost + C_slid_cost + C_grav_cost  + C_float_cost
+            energy_mean_list = [tf.reduce_mean(en) for en in energy_list]
+
+            COST = tf.add_n(energy_mean_list)
 
             Cost_Glen.append(COST)
 
@@ -71,15 +75,19 @@ def solve_iceflow(cfg, state, U, V):
             #             break
 
         grads = t.gradient(COST, [U, V])
+
+        if len(cfg.processes.iceflow.physics.sliding_law) > 0:
+            sliding_gradients = t.gradient(basis_vectors, [U, V], output_gradients=sliding_shear_stress )
+            grads = [ grad + (sgrad / tf.cast(U.shape[-2] * U.shape[-1], tf.float32)) \
+                        for grad, sgrad in zip(grads, sliding_gradients) ]
  
         state.optimizer.apply_gradients(zip(grads, [U, V]))
+        
+        velsurf_mag = getmag(*get_velsurf(U,V, cfg.processes.iceflow.numerics.vert_basis))
 
-        velsurf_mag = tf.sqrt(U[-1] ** 2 + V[-1] ** 2)
-
-        if state.it == 0:    
-            print_info(state, i, C_shear_cost.numpy(), C_slid_cost.numpy(), \
-                                 C_grav_cost.numpy(), COST.numpy(), 
-                                 tf.reduce_max(velsurf_mag).numpy())
+        if state.it <= 1:    
+            print_info(state, i, cfg, [e.numpy() for e in energy_mean_list], 
+                                         tf.reduce_max(velsurf_mag).numpy())
  
         if (i + 1) % 100 == 0:
 
@@ -90,7 +98,7 @@ def solve_iceflow(cfg, state, U, V):
                     np.where(state.thk > 0, velsurf_mag, np.nan),
                     origin="lower",
                     cmap="turbo",
-                    norm=matplotlib.colors.LogNorm(vmin=1,vmax=300)
+                    norm=matplotlib.colors.LogNorm(vmin=1,vmax=1000)
                 )
                 if not hasattr(state, "already_set_cbar"):
                     state.cbar = plt.colorbar(im, label='velocity')
@@ -98,6 +106,8 @@ def solve_iceflow(cfg, state, U, V):
                 state.fig.canvas.draw()  # re-drawing the figure
                 state.fig.canvas.flush_events()  # to flush the GUI events
                 state.ax.set_title("i : " + str(i), size=15)
+
+        del t 
 
         if early_stopping.should_stop(COST.numpy()): 
 #            print("Early stopping at iteration", i)
@@ -122,16 +132,14 @@ def solve_iceflow_lbfgs(cfg, state, U, V):
         U = UV[0]
         V = UV[1]
 
-        fieldin = [
-            tf.expand_dims(vars(state)[f], axis=0) for f in cfg.processes.iceflow.emulator.fieldin
-        ]
+        fieldin = [vars(state)[f][None,...] for f in cfg.processes.iceflow.emulator.fieldin]
 
-        C_shear, C_slid, C_grav, C_float = iceflow_energy(
-            cfg, tf.expand_dims(U, axis=0), tf.expand_dims(V, axis=0), fieldin
-        )
+        energy_list = iceflow_energy(cfg, U[None,...], V[None,...], fieldin)
+ 
+        energy_mean_list = [tf.reduce_mean(en) for en in energy_list]
 
-        COST = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
-             + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
+        COST = tf.add_n(energy_mean_list)
+
             
         return COST
 
@@ -161,30 +169,20 @@ def solve_iceflow_lbfgs(cfg, state, U, V):
 def update_iceflow_solved(cfg, state):
 
     if cfg.processes.iceflow.solver.lbfgs:
+        raise ValueError("solve_iceflow_lbfgs formely implemented, not working yet, will be updated.")
         state.U, state.V, Cost_Glen = solve_iceflow_lbfgs(cfg, state, state.U, state.V)
     else:
         state.U, state.V, Cost_Glen = solve_iceflow(cfg, state, state.U, state.V)
 
     
     if cfg.processes.iceflow.force_max_velbar > 0:
-        velbar_mag = getmag3d(state.U, state.V)
-        state.U = \
-            tf.where(
-                velbar_mag >= cfg.processes.iceflow.force_max_velbar,
-                cfg.processes.iceflow.force_max_velbar * (state.U / velbar_mag),
-                state.U,
-            ) 
-        state.V = \
-            tf.where(
-                velbar_mag >= cfg.processes.iceflow.force_max_velbar,
-                cfg.processes.iceflow.force_max_velbar * (state.V / velbar_mag),
-                state.V,
-            ) 
+        force_max_velbar(cfg, state)
         
     if len(cfg.processes.iceflow.solver.save_cost)>0:
         np.savetxt(cfg.processes.iceflow.emulator.output_directory+cfg.processes.iceflow.solver.save_cost+'-'+str(state.it)+'.dat', np.array(Cost_Glen),  fmt="%5.10f")
 
     state.COST_Glen = Cost_Glen[-1].numpy()
 
-    update_2d_iceflow_variables(cfg, state)
- 
+    state.uvelbase, state.vvelbase = get_velbase(state.U, state.V, cfg.processes.iceflow.numerics.vert_basis)
+    state.uvelsurf, state.vvelsurf = get_velsurf(state.U, state.V, cfg.processes.iceflow.numerics.vert_basis)
+    state.ubar, state.vbar = get_velbar(state.U, state.V, state.vert_weight, cfg.processes.iceflow.numerics.vert_basis)

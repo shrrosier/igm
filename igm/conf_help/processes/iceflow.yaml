@@ -7,6 +7,14 @@ force_max_velbar:
   Description: "This permits to artificially upper-bound velocities, active if > 0"
   Units: m y^{-1}
 physics:
+  energy_components:
+    Type: list
+    Description: "List of energy components to compute, it can be shear, sliding_weertman, gravity, or all"
+    Units: dimless
+  sliding_law: 
+    Type: string
+    Description: "Type of sliding law, it can be empty or weertman yet. If you use this, make sure to remove the corresponding energy component in the list above. WARNING: this is not working well yet, do not use it yet."
+    Units: dimless
   gravity_cst:
     Type: float
     Description: "Gravitational constant"
@@ -43,17 +51,9 @@ physics:
     Type: float
     Description: "Weertman's law exponent"
     Units: dimless
-  new_friction_param:
-    Type: boolean
-    Description: "Sliding coefficient (this describes slidingco differently with slidingco**-(1.0 / exp_weertman) instead of slidingco as before)"
-    Units: dimless
   dim_arrhenius:
     Type: integer
     Description: "Dimension of the arrhenius factor (horizontal 2D or 3D)"
-    Units: dimless
-  regu:
-    Type: float
-    Description: "This regularizes the energy forcing ice flow to be smooth in the horizontal direction"
     Units: dimless
   thr_ice_thk:
     Type: float
@@ -73,10 +73,6 @@ physics:
     Units: dimless
   cf_eswn:
     Type: list
-    Description: "This forces calving front at the border of the domain in the side given in the list"
-    Units: dimless
-  cf_cond:
-    Type: boolean
     Description: "This forces calving front at the border of the domain in the side given in the list"
     Units: dimless
 numerics:

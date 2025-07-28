@@ -39,7 +39,9 @@ from igm.processes.iceflow.emulate.emulate import initialize_iceflow_emulator,up
 from igm.processes.iceflow.emulate.emulate import update_iceflow_emulator, save_iceflow_model
 from igm.processes.iceflow.solve.solve import initialize_iceflow_solver, update_iceflow_solved
 from igm.processes.iceflow.diagnostic.diagnostic import initialize_iceflow_diagnostic, update_iceflow_diagnostic
-from igm.processes.iceflow.utils import initialize_iceflow_fields, define_vertical_weight,compute_PAD
+from igm.processes.iceflow.utils import initialize_iceflow_fields,compute_PAD
+from igm.processes.iceflow.vert_disc import define_vertical_weight, compute_levels, compute_zeta_dzeta
+from igm.processes.iceflow.energy.utils import gauss_points_and_weights, legendre_basis
 
 def initialize(cfg, state):
 
@@ -61,7 +63,23 @@ def initialize(cfg, state):
         initialize_iceflow_diagnostic(cfg,state)
 
     # create the vertica discretization
-    define_vertical_weight(cfg, state)
+    state.vert_weight = define_vertical_weight(
+        cfg.processes.iceflow.numerics.Nz,cfg.processes.iceflow.numerics.vert_spacing
+                                              )
+ 
+    if cfg.processes.iceflow.numerics.vert_basis == "Lagrange":
+        state.levels = compute_levels(cfg.processes.iceflow.numerics.Nz, cfg.processes.iceflow.numerics.vert_spacing)
+        state.zeta, state.dzeta = compute_zeta_dzeta(state.levels)
+        state.Leg_P, state.Leg_dPdz, state.Leg_I = None, None, None
+    elif cfg.processes.iceflow.numerics.vert_basis == "Legendre":
+        state.zeta, state.dzeta = gauss_points_and_weights(ord_gauss=cfg.processes.iceflow.numerics.Nz)
+        state.Leg_P, state.Leg_dPdz, state.Leg_I = legendre_basis(state.zeta,order=state.zeta.shape[0]) 
+    elif cfg.processes.iceflow.numerics.vert_basis == "SIA":
+        assert cfg.processes.iceflow.numerics.Nz == 2 
+        state.zeta, state.dzeta = gauss_points_and_weights(ord_gauss=5)
+        state.Leg_P, state.Leg_dPdz, state.Leg_I = None, None, None
+    else:
+        raise ValueError(f"Unknown vertical basis: {cfg.processes.iceflow.numerics.vert_basis}")
     
     # padding is necessary when using U-net emulator
     state.PAD = compute_PAD(cfg, state.thk.shape[1],state.thk.shape[0])

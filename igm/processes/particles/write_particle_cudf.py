@@ -38,24 +38,18 @@ def update_write_particle_cudf(cfg, state):
 
         filename = os.path.join(
             "trajectories",
-            "traj-" + "{:06d}".format(int(state.t.numpy())),
+            "traj-" + "{:08.2f}".format(state.t.numpy()).replace('.', '-'),
         )
 
-        particle_id = tf.cast(tf.range(state.particle_x.shape[0]), dtype=tf.float32)
         array = tf.transpose(
             tf.stack(
                 [
-                    particle_id,
-                    state.particle_x
-                    + state.x[0],
-                    state.particle_y
-                    + state.y[0],
-                    state.particle_z,
-                    state.particle_r,
-                    state.particle_t,
-                    state.particle_englt,
-                    state.particle_topg,
-                    state.particle_thk,
+                    state.particle["id"],
+                    state.particle["x"] + state.x[0],
+                    state.particle["y"] + state.y[0],
+                    state.particle["z"],
+                    state.particle["r"],
+                    state.particle["t"],
                 ],
                 axis=0,
             )
@@ -69,16 +63,13 @@ def update_write_particle_cudf(cfg, state):
             "y",
             "z",
             "rh",
-            "t",
-            "englt",
-            "topg",
-            "thk",
+            "t"
         ]  # for some reason, my header shows '# Id' for the numpy version but 'Id' for GPU... fyi
-        if cfg.processes.particles.output_format == "csv":
+        if cfg.processes.particles.output.format == "csv":
             df.to_csv(f"{filename}.csv", index=False)
-        elif cfg.processes.particles.output_format == "feather":
+        elif cfg.processes.particles.output.format == "feather":
             df.to_feather(f"{filename}")
-        elif cfg.processes.particles.output_format == "parquet":
+        elif cfg.processes.particles.output.format == "parquet":
             df.to_parquet(f"{filename}")
         else:
             raise ValueError(
@@ -110,11 +101,11 @@ def update_write_particle_cudf(cfg, state):
             df_topo = cudf.DataFrame(array)
             df_topo.columns = ["x", "y", "z"]
             
-            if cfg.processes.particles.output_format == "csv":
+            if cfg.processes.particles.output.format == "csv":
                 df_topo.to_csv(f"{filename_topography}.csv", index=False)
-            elif cfg.processes.particles.output_format == "feather":
+            elif cfg.processes.particles.output.format == "feather":
                 df_topo.to_feather(f"{filename_topography}")
-            elif cfg.processes.particles.output_format == "parquet":
+            elif cfg.processes.particles.output.format == "parquet":
                 df_topo.to_parquet(f"{filename_topography}")
             else:
                 raise ValueError(
