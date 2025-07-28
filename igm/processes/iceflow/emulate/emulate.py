@@ -226,10 +226,6 @@ def update_iceflow_emulated(cfg, state):
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
-    # Only start profiling if enabled in config
-    if hasattr(cfg.processes.iceflow.emulator, 'enable_profiling') and cfg.processes.iceflow.emulator.enable_profiling:
-        tf.profiler.experimental.start('logdir_path')
-
     if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
         update_iceflow_emulator_LBFGS(cfg, state, it, pertubate)
     elif cfg.processes.iceflow.emulator.optimizer == "Adam":
@@ -237,9 +233,6 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
     else:
         raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
     
-    # Only stop profiling if it was started
-    if hasattr(cfg.processes.iceflow.emulator, 'enable_profiling') and cfg.processes.iceflow.emulator.enable_profiling:
-        tf.profiler.experimental.stop()
 
 
 

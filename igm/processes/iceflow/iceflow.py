@@ -43,11 +43,40 @@ from igm.processes.iceflow.utils import initialize_iceflow_fields,compute_PAD
 from igm.processes.iceflow.vert_disc import define_vertical_weight, compute_levels, compute_zeta_dzeta
 from igm.processes.iceflow.energy.utils import gauss_points_and_weights, legendre_basis
 
+# Import TensorFlow profiler if available
+try:
+    import tensorflow as tf
+    PROFILER_AVAILABLE = True
+except ImportError:
+    PROFILER_AVAILABLE = False
+
 def initialize(cfg, state):
 
     # This makes sure this function is only called once
     if hasattr(state, "was_initialize_iceflow_already_called"):
         return
+    
+    # Start TensorFlow profiler if using emulated method and profiling is enabled
+    if (cfg.processes.iceflow.method == "emulated" and 
+        PROFILER_AVAILABLE and 
+        hasattr(cfg.processes.iceflow.emulator, 'enable_profiler') and 
+        cfg.processes.iceflow.emulator.enable_profiler):
+        
+        # Create profiler logs directory
+        import os
+        logdir = os.path.join(os.getcwd(), 'profiler_logs')
+        os.makedirs(logdir, exist_ok=True)
+        
+        try:
+            tf.profiler.experimental.start(logdir)
+            print(f"TensorFlow profiler started for entire model run. Logs will be saved to: {logdir}")
+            state.profiler_active = True
+            state.profiler_logdir = logdir
+        except Exception as e:
+            print(f"Failed to start TensorFlow profiler: {e}")
+            state.profiler_active = False
+    else:
+        state.profiler_active = False
 
     # deinfe the fields of the ice flow such a U, V, but also sliding coefficient, arrhenius, ectt
     initialize_iceflow_fields(cfg, state)
@@ -114,6 +143,14 @@ def update(cfg, state):
 
 
 def finalize(cfg, state):
+
+    # Stop TensorFlow profiler if it was started
+    if hasattr(state, 'profiler_active') and state.profiler_active and PROFILER_AVAILABLE:
+        try:
+            tf.profiler.experimental.stop()
+            print(f"TensorFlow profiler stopped. View results with: tensorboard --logdir {state.profiler_logdir}")
+        except Exception as e:
+            print(f"Failed to stop TensorFlow profiler: {e}")
 
     if cfg.processes.iceflow.emulator.save_model:
         save_iceflow_model(cfg, state)
