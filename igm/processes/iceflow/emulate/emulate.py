@@ -159,6 +159,9 @@ def initialize_iceflow_emulator(cfg, state):
 
     fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
 
+    vert_disc = [vars(state)[f] for f in ['zeta', 'dzeta', 'Leg_P', 'Leg_dPdz']]
+
+
     XX = fieldin_to_X(cfg, fieldin) 
 
     X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
@@ -166,7 +169,7 @@ def initialize_iceflow_emulator(cfg, state):
     Ny = X.shape[-3]
     Nx = X.shape[-2]
 
-    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny)
+    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny, vert_disc)
 
     state.emulator_trainer = Optimizer_NN_LBFGS(
         cost_fn, 
@@ -223,8 +226,9 @@ def update_iceflow_emulated(cfg, state):
 
 def update_iceflow_emulator(cfg, state, it, pertubate=False):
 
-    tf.profiler.experimental.start('logdir_path')
-
+    # Only start profiling if enabled in config
+    if hasattr(cfg.processes.iceflow.emulator, 'enable_profiling') and cfg.processes.iceflow.emulator.enable_profiling:
+        tf.profiler.experimental.start('logdir_path')
 
     if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
         update_iceflow_emulator_LBFGS(cfg, state, it, pertubate)
@@ -233,7 +237,9 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
     else:
         raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
     
-    tf.profiler.experimental.stop()
+    # Only stop profiling if it was started
+    if hasattr(cfg.processes.iceflow.emulator, 'enable_profiling') and cfg.processes.iceflow.emulator.enable_profiling:
+        tf.profiler.experimental.stop()
 
 
 
@@ -275,16 +281,13 @@ def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):
 
     
 
-def calculate_cost(cfg, X, Y, Nx, Ny):
+def calculate_cost(cfg, X, Y, Nx, Ny, vert_disc):
 
-    C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(cfg, X, Y[:,:Ny,:Nx,:])
- 
-    C_shear_cost = tf.reduce_mean(C_shear)
-    C_slid_cost  = tf.reduce_mean(C_slid)
-    C_grav_cost  = tf.reduce_mean(C_grav)
-    C_float_cost = tf.reduce_mean(C_float)
+    cost_list = iceflow_energy_XY(cfg, X, Y[:,:Ny,:Nx,:], vert_disc)
 
-    COST = C_shear_cost + C_slid_cost + C_grav_cost + C_float_cost
+    # Calculate mean cost for each component and sum them
+    cost_means = [tf.reduce_mean(cost) for cost in cost_list]
+    COST = tf.add_n(cost_means)
 
     return COST
 

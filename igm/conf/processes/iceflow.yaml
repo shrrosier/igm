@@ -23,7 +23,7 @@ iceflow:
     Nz: 10
     vert_spacing: 4.0
     staggered_grid: 1
-    vert_basis: "Lagrange"
+    vert_basis: "SIA"
   solver:
     step_size: 1.0
     nbitmax: 100
@@ -34,6 +34,7 @@ iceflow:
     plot_sol: False
   emulator:
     precision: float32
+    enable_profiling: false
     fieldin:
     - thk
     - usurf

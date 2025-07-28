@@ -52,16 +52,6 @@ def initialize(cfg, state):
     # deinfe the fields of the ice flow such a U, V, but also sliding coefficient, arrhenius, ectt
     initialize_iceflow_fields(cfg, state)
 
-    if cfg.processes.iceflow.method == "emulated":
-        # define the emulator, and the optimizer
-        initialize_iceflow_emulator(cfg, state)
-    elif cfg.processes.iceflow.method == "solved":
-        # define the solver, and the optimizer
-        initialize_iceflow_solver(cfg, state)    
-    elif cfg.processes.iceflow.method == "diagnostic":
-        # define the second velocity field
-        initialize_iceflow_diagnostic(cfg,state)
-
     # create the vertica discretization
     state.vert_weight = define_vertical_weight(
         cfg.processes.iceflow.numerics.Nz,cfg.processes.iceflow.numerics.vert_spacing
@@ -80,9 +70,19 @@ def initialize(cfg, state):
         state.Leg_P, state.Leg_dPdz, state.Leg_I = None, None, None
     else:
         raise ValueError(f"Unknown vertical basis: {cfg.processes.iceflow.numerics.vert_basis}")
-    
+
     # padding is necessary when using U-net emulator
     state.PAD = compute_PAD(cfg, state.thk.shape[1],state.thk.shape[0])
+
+    if cfg.processes.iceflow.method == "emulated":
+        # define the emulator, and the optimizer
+        initialize_iceflow_emulator(cfg, state)
+    elif cfg.processes.iceflow.method == "solved":
+        # define the solver, and the optimizer
+        initialize_iceflow_solver(cfg, state)    
+    elif cfg.processes.iceflow.method == "diagnostic":
+        # define the second velocity field
+        initialize_iceflow_diagnostic(cfg,state)
     
     if not cfg.processes.iceflow.method == "solved":
         update_iceflow_emulator(cfg, state, 0)
