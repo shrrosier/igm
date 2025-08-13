@@ -19,10 +19,7 @@ import igm
 import matplotlib.pyplot as plt
 import matplotlib
 
-import sys
-sys.path.append('/home/srosier/work/tgregov')
-from Optimizer_NN import Optimizer_NN
-from Optimizer_NN_LBFGS import Optimizer_NN_LBFGS
+from tgregov2 import MappingNetwork, Mapping, Optimizer, OptimizerLBFGS, get_inputs_scaled
 
 def initialize_iceflow_emulator(cfg, state):
 
@@ -169,21 +166,48 @@ def initialize_iceflow_emulator(cfg, state):
     Ny = X.shape[-3]
     Nx = X.shape[-2]
 
-    cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny, vert_disc)
+    if cfg.processes.iceflow.emulator.optimizer == "LBFGS":
 
-    state.emulator_trainer = Optimizer_NN_LBFGS(
-        cost_fn, 
-        state.iceflow_model, 
-        X, 
-        fieldin = cfg.processes.iceflow.emulator.fieldin,
-        scale     = 1, 
-        iter_max  = 1, 
-        tol       = 1e-4,
-        time_max  = 100000, 
-        alpha_min = 1e-10,
-        num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
-        precision = cfg.processes.iceflow.emulator.precision,
-    )
+        cost_fn = lambda Y, X: calculate_cost(cfg, X, Y, Nx, Ny, vert_disc)
+
+        state.emulator_trainer = Optimizer_NN_LBFGS(
+            cost_fn, 
+            state.iceflow_model, 
+            X, 
+            fieldin = cfg.processes.iceflow.emulator.fieldin,
+            scale     = 1, 
+            iter_max  = 1, 
+            tol       = 1e-4,
+            time_max  = 100000, 
+            alpha_min = 1e-10,
+            num_perturbations = cfg.processes.iceflow.emulator.num_perturbations,
+            precision = cfg.processes.iceflow.emulator.precision,
+        )
+
+    elif cfg.processes.iceflow.emulator.optimizer == "tgregov":
+        
+        def cost_fn(Y, X): 
+            return calculate_cost(cfg, X, Y, Nx, Ny, vert_disc)
+
+        # Create inputs tensor similar to how it's done in the ADAM optimizer
+        # X is already the properly formatted input tensor from fieldin_to_X
+        inputs_tensor = X[0]  # Take first patch as representative input
+        
+        # Create a simple scale tensor (you may want to adjust this based on your data)
+        scale = tf.ones(1, dtype=cfg.processes.iceflow.emulator.precision)
+        
+        # Create the mapping network
+        mapping_network = MappingNetwork(state.iceflow_model, inputs_tensor, scale)
+        
+        # For tgregov, you'll need to use a specific optimizer implementation
+        # Let's use OptimizerLBFGS as it's available
+        state.emulator_trainer = OptimizerLBFGS(
+            cost_fn,
+            mapping_network,
+            memory=10,
+            alpha_min=1e-10
+        )
+
 
 
 def update_iceflow_emulated(cfg, state):
@@ -230,10 +254,29 @@ def update_iceflow_emulator(cfg, state, it, pertubate=False):
         update_iceflow_emulator_LBFGS(cfg, state, it, pertubate)
     elif cfg.processes.iceflow.emulator.optimizer == "Adam":
         update_iceflow_emulator_ADAM(cfg, state, it, pertubate)
+    elif cfg.processes.iceflow.emulator.optimizer == "tgregov":
+        update_iceflow_emulator_tgregov(cfg, state, it, pertubate)
     else:
         raise ValueError("Unknown optimizer: {}".format(cfg.processes.iceflow.emulator.optimizer))
     
 
+def update_iceflow_emulator_tgregov(cfg, state, it, pertubate=False):
+    run_it = False
+    if cfg.processes.iceflow.emulator.retrain_freq > 0:
+       run_it = (it % cfg.processes.iceflow.emulator.retrain_freq == 0)
+ 
+    warm_up = int(it <= cfg.processes.iceflow.emulator.warm_up_it)
+
+    if (warm_up | run_it):
+
+        if warm_up:
+            nbit = cfg.processes.iceflow.emulator.nbit_init
+        else:
+            nbit = cfg.processes.iceflow.emulator.nbit
+
+        fieldin = [vars(state)[f] for f in cfg.processes.iceflow.emulator.fieldin]
+        XX = fieldin_to_X(cfg, fieldin)
+        X = split_into_patches_with_overlap(XX, cfg.processes.iceflow.emulator.framesizemax, overlap=0.25)
 
 
 def update_iceflow_emulator_LBFGS(cfg, state, it, pertubate=False):

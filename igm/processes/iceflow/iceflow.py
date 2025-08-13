@@ -59,8 +59,8 @@ def initialize(cfg, state):
     # Start TensorFlow profiler if using emulated method and profiling is enabled
     if (cfg.processes.iceflow.method == "emulated" and 
         PROFILER_AVAILABLE and 
-        hasattr(cfg.processes.iceflow.emulator, 'enable_profiler') and 
-        cfg.processes.iceflow.emulator.enable_profiler):
+        hasattr(cfg.processes.iceflow.emulator, 'enable_profiling') and 
+        cfg.processes.iceflow.emulator.enable_profiling):
         
         # Create profiler logs directory
         import os
